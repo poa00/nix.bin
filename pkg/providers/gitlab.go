@@ -2,7 +2,6 @@ package providers
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -28,13 +27,17 @@ type gitLab struct {
 	tag    string
 }
 
-func (g *gitLab) Fetch() (*File, error) {
+func (g *gitLab) Fetch(opts *FetchOpts) (*File, error) {
 	var release *gitlab.Release
 
 	// If we have a tag, let's fetch from there
 	var err error
 	projectPath := fmt.Sprintf("%s/%s", g.owner, g.repo)
-	if len(g.tag) > 0 {
+	if len(g.tag) > 0 || len(opts.Version) > 0 {
+		if len(opts.Version) > 0 {
+			// this is used by for the `ensure` command
+			g.tag = opts.Version
+		}
 		log.Infof("Getting %s release for %s/%s", g.tag, g.owner, g.repo)
 		release, _, err = g.client.Releases.GetRelease(projectPath, g.tag)
 	} else {
@@ -151,7 +154,9 @@ func (g *gitLab) Fetch() (*File, error) {
 		return nil, err
 	}
 
-	gf, err := assets.FilterAssets(g.repo, candidates)
+	f := assets.NewFilter(&assets.FilterOpts{SkipScoring: opts.All, PackagePath: opts.PackagePath, SkipPathCheck: opts.SkipPatchCheck})
+
+	gf, err := f.FilterAssets(g.repo, candidates)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +168,7 @@ func (g *gitLab) Fetch() (*File, error) {
 		gf.ExtraHeaders["PRIVATE-TOKEN"] = g.token
 	}
 
-	name, outputFile, err := assets.ProcessURL(gf)
+	outFile, err := f.ProcessURL(gf)
 	if err != nil {
 		return nil, err
 	}
@@ -173,9 +178,9 @@ func (g *gitLab) Fetch() (*File, error) {
 	// TODO calculate file hash. Not sure if we can / should do it here
 	// since we don't want to read the file unnecesarily. Additionally, sometimes
 	// releases have .sha256 files, so it'd be nice to check for those also
-	f := &File{Data: outputFile, Name: assets.SanitizeName(name, version), Hash: sha256.New(), Version: version}
+	file := &File{Data: outFile.Source, Name: outFile.Name, Version: version}
 
-	return f, nil
+	return file, nil
 }
 
 func (g *gitLab) GetID() string {
@@ -202,10 +207,7 @@ func (g *gitLab) GetLatestVersion() (string, string, error) {
 	svToTagName := map[string]string{}
 	tagNameToRelease := map[string]*gitlab.Release{}
 	for _, release := range releases {
-		tagName := release.TagName
-		if strings.HasPrefix(tagName, "v") {
-			tagName = strings.TrimPrefix(tagName, "v")
-		}
+		tagName := strings.TrimPrefix(release.TagName, "v")
 		sv, err := semver.NewVersion(tagName)
 		if err != nil {
 			continue
@@ -226,7 +228,7 @@ func (g *gitLab) GetLatestVersion() (string, string, error) {
 
 func newGitLab(u *url.URL) (Provider, error) {
 	s := strings.Split(u.Path, "/")
-	if len(s) < 2 {
+	if len(s) < 3 {
 		return nil, fmt.Errorf("Error parsing GitLab URL %s, can't find owner and repo", u.String())
 	}
 

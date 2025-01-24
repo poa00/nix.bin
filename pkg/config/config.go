@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/apex/log"
 )
@@ -15,6 +17,9 @@ import (
 var cfg config
 
 type config struct {
+	// DefaultPath might not be expanded so it's important that
+	// the caller expands this variable with os.ExpandEnv(string)
+	// if necessary
 	DefaultPath string             `json:"default_path"`
 	Bins        map[string]*Binary `json:"bins"`
 }
@@ -26,6 +31,11 @@ type Binary struct {
 	Hash       string `json:"hash"`
 	URL        string `json:"url"`
 	Provider   string `json:"provider"`
+	// if file is installed from a package format (zip, tar, etc) store
+	// the package path in config so we don't ask the user to select
+	// the path again when upgrading
+	PackagePath string `json:"package_path"`
+	Pinned      bool   `json:"pinned"`
 }
 
 func CheckAndLoad() error {
@@ -58,15 +68,39 @@ func CheckAndLoad() error {
 	if len(cfg.DefaultPath) == 0 {
 		cfg.DefaultPath, err = getDefaultPath()
 		if err != nil {
-			return err
+			for {
+				log.Info("Could not find a PATH directory automatically, falling back to manual selection")
+				reader := bufio.NewReader(os.Stdin)
+				var response string
+				fmt.Printf("\nPlease specify a download directory: ")
+				response, err := reader.ReadString('\n')
+				if err != nil {
+					return fmt.Errorf("Invalid input")
+				}
+				response = strings.TrimSpace(response)
+
+				if err = checkDirExistsAndWritable(response); err != nil {
+					log.Debugf("Could not set download directory [%s]: [%v]", response, err)
+					// Keep looping until writable and existing dir is selected
+					continue
+				}
+
+				cfg.DefaultPath = response
+				break
+			}
 		}
-		f.Close()
+
 		if err := write(); err != nil {
 			return err
 		}
-	}
-	log.Debugf("Download path set to %s", cfg.DefaultPath)
 
+	}
+
+	if cfg.Bins == nil {
+		cfg.Bins = map[string]*Binary{}
+	}
+
+	log.Debugf("Download path set to %s", cfg.DefaultPath)
 	return nil
 }
 
@@ -114,7 +148,6 @@ func write() error {
 	decoder := json.NewEncoder(f)
 	decoder.SetIndent("", "    ")
 	err = decoder.Encode(cfg)
-
 	if err != nil {
 		return err
 	}
@@ -154,8 +187,10 @@ func GetOS() []string {
 //   - if "XDG_CONFIG_HOME" is set, return "$XDG_CONFIG_HOME/bin"
 //   - if "$HOME/.config" exists, return "$home/.config/bin"
 //   - default to "$HOME/.bin/"
+//
 // ToDo: move the function to config_unix.go and add a similar function for windows,
-//       %APPDATA% might be the right place on windows
+//
+//	%APPDATA% might be the right place on windows
 func getConfigPath() (string, error) {
 	home, homeErr := os.UserHomeDir()
 	if homeErr == nil {

@@ -90,9 +90,9 @@ func TestFilterAssets(t *testing.T) {
 			{Name: "bin_0.1.0_Darwin_x86_64", URL: "https://github.com/marcosnils/bin/releases/download/v0.0.1/bin_0.1.0_Darwin_x86_64"},
 		}}, "bin_0.1.0_Linux_x86_64", testLinuxAMDResolver},
 		{args{"gitlab-runner", []*Asset{
-			{Name: "Windows 64 bits", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-windows-amd64.zip"},
-			{Name: "linux amd64", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-linux-amd64"},
-			{Name: "macOS", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-darwin-amd64"},
+			{Name: "gitlab-runner-windows-amd64", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-windows-amd64.zip"},
+			{Name: "gitlab-runner-linux-amd64", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-linux-amd64"},
+			{Name: "gitlab-runner-darwin-amd64", URL: "https://gitlab-runner-downloads.s3.amazonaws.com/v13.2.1/binaries/gitlab-runner-darwin-amd64"},
 		}}, "gitlab-runner-linux-amd64", testLinuxAMDResolver},
 		{args{"yq", []*Asset{
 			{Name: "yq_freebsd_amd64", URL: "https://github.com/mikefarah/yq/releases/download/3.3.2/yq_freebsd_amd64"},
@@ -144,11 +144,18 @@ func TestFilterAssets(t *testing.T) {
 			{Name: "usql-0.8.2-linux-amd64.tar.bz2", URL: "https://github.com/xo/usql/releases/download/v0.8.2/usql-0.8.2-linux-amd64.tar.bz2"},
 			{Name: "usql-0.8.2-windows-amd64.zip", URL: "https://github.com/xo/usql/releases/download/v0.8.2/usql-0.8.2-windows-amd64.zip"},
 		}}, "usql-0.8.2-windows-amd64.zip", testWindowsAMDResolver},
+		{args{"cli", []*Asset{
+			{Name: "dapr", URL: ""},
+		}}, "dapr", testLinuxAMDResolver},
 	}
 
+	f := NewFilter(&FilterOpts{SkipScoring: false})
 	for _, c := range cases {
 		resolver = c.resolver
-		if n, err := FilterAssets(c.in.repoName, c.in.as); err != nil {
+		if n, err := f.FilterAssets(c.in.repoName, c.in.as); err != nil {
+			for _, a := range c.in.as {
+				fmt.Println(a.Name, c.resolver)
+			}
 			t.Fatalf("Error filtering assets %v", err)
 		} else if n.Name != c.out {
 			t.Fatalf("Error filtering %+v: %+v does not match %s", c.in, n, c.out)
@@ -176,30 +183,6 @@ func TestIsSupportedExt(t *testing.T) {
 		result := isSupportedExt(c.in)
 		if result != c.out {
 			t.Fatalf("Expected result for extension %v to be %v, but got result %v", c.in, c.out, result)
-		}
-	}
-
-}
-
-func TestFilterSingleAsset(t *testing.T) {
-	type args struct {
-		repoName string
-		as       []*Asset
-	}
-	cases := []struct {
-		in  args
-		out string
-	}{
-		{args{"cli", []*Asset{
-			{Name: "dapr", URL: ""},
-		}}, "dapr"},
-	}
-
-	for _, c := range cases {
-		if n, err := FilterAssets(c.in.repoName, c.in.as); err != nil {
-			t.Fatalf("Error filtering asset [%v]", err)
-		} else if n.Name != c.out {
-			t.Fatalf("Error filtering %+v: %+v does not match %s", c.in, n, c.out)
 		}
 	}
 

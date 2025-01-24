@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/apex/log"
+	"github.com/marcosnils/bin/pkg/assets"
 	"github.com/marcosnils/bin/pkg/config"
 	"github.com/marcosnils/bin/pkg/providers"
 	"github.com/spf13/cobra"
@@ -20,12 +22,13 @@ type installCmd struct {
 type installOpts struct {
 	force    bool
 	provider string
+	all      bool
 }
 
 func newInstallCmd() *installCmd {
-	var root = &installCmd{}
+	root := &installCmd{}
 	// nolint: dupl
-	var cmd = &cobra.Command{
+	cmd := &cobra.Command{
 		Use:           "install <url>",
 		Aliases:       []string{"i"},
 		Short:         "Installs the specified project from a url",
@@ -33,35 +36,22 @@ func newInstallCmd() *installCmd {
 		SilenceErrors: true,
 		Args:          cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			//TODO implement --force(-f) flag for install
-			// to override the binary if exists
 			u := args[0]
 
-			//TODO make this path optional. If the path
-			//is not specified bin could automatically
-			//select a PATH that could write and install the binaries there.
-			//Additionally, it could store that path in the config file so it doesn't
-			//have to calculate it each time. Afterwards, bin users can change this
-			//path by editing bin's config file or maybe introdice the `bin config` command
-
-			var path string
+			var resolvedPath string
 			if len(args) > 1 {
-				var err error
-				// Resolve to absolute path
-				if path, err = filepath.Abs(args[1]); err != nil {
-					return err
-				}
+				resolvedPath = args[1]
 			} else if len(config.Get().DefaultPath) > 0 {
-				path = config.Get().DefaultPath
+				resolvedPath = config.Get().DefaultPath
 			} else {
 				var err error
-				path, err = os.Getwd()
+				resolvedPath, err = os.Getwd()
 				if err != nil {
 					return err
 				}
 			}
 
-			//TODO check if binary already exists in config
+			// TODO check if binary already exists in config
 			// and triger the update process if that's the case
 
 			p, err := providers.New(u, root.opts.provider)
@@ -69,31 +59,30 @@ func newInstallCmd() *installCmd {
 				return err
 			}
 
-			pResult, err := p.Fetch()
-
+			pResult, err := p.Fetch(&providers.FetchOpts{All: root.opts.all})
 			if err != nil {
 				return err
 			}
 
-			path, err = getFinalPath(path, pResult.Name)
-
+			resolvedPath, err = checkFinalPath(resolvedPath, assets.SanitizeName(pResult.Name, pResult.Version))
 			if err != nil {
 				return err
 			}
 
-			if err = saveToDisk(pResult, path, root.opts.force); err != nil {
-				return fmt.Errorf("Error installing binary: %w", err)
+			hash, err := saveToDisk(pResult, resolvedPath, root.opts.force)
+			if err != nil {
+				return fmt.Errorf("error installing binary: %w", err)
 			}
 
 			err = config.UpsertBinary(&config.Binary{
-				RemoteName: pResult.Name,
-				Path:       path,
-				Version:    pResult.Version,
-				Hash:       fmt.Sprintf("%x", pResult.Hash.Sum(nil)),
-				URL:        u,
-				Provider:   p.GetID(),
+				RemoteName:  pResult.Name,
+				Path:        resolvedPath,
+				Version:     pResult.Version,
+				Hash:        fmt.Sprintf("%x", hash),
+				URL:         u,
+				Provider:    p.GetID(),
+				PackagePath: pResult.PackagePath,
 			})
-
 			if err != nil {
 				return err
 			}
@@ -106,18 +95,19 @@ func newInstallCmd() *installCmd {
 
 	root.cmd = cmd
 	root.cmd.Flags().BoolVarP(&root.opts.force, "force", "f", false, "Force the installation even if the file already exists")
+	root.cmd.Flags().BoolVarP(&root.opts.all, "all", "a", false, "Show all possible download options (skip scoring & filtering)")
 	root.cmd.Flags().StringVarP(&root.opts.provider, "provider", "p", "", "Forces to use a specific provider")
 	return root
 }
 
-// getFinalPath checks if path exists and if it's a dir or not
+// checkFinalPath checks if path exists and if it's a dir or not
 // and returns the correct final file path. It also
 // checks if the path already exists and prompts
 // the user to override
-func getFinalPath(path, fileName string) (string, error) {
-	fi, err := os.Stat(path)
+func checkFinalPath(path, fileName string) (string, error) {
+	fi, err := os.Stat(os.ExpandEnv(path))
 
-	//TODO implement file existence and override logic
+	// TODO implement file existence and override logic
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
@@ -127,41 +117,44 @@ func getFinalPath(path, fileName string) (string, error) {
 	}
 
 	return path, nil
-
 }
 
 // saveToDisk saves the specified binary to the desired path
 // and makes it executable. It also checks if any other binary
 // has the same hash and exists if so.
 
-//TODO check if other binary has the same hash and warn about it.
-//TODO if the file is zipped, tared, whatever then extract it
-func saveToDisk(f *providers.File, path string, overwrite bool) error {
+// TODO check if other binary has the same hash and warn about it.
+// TODO if the file is zipped, tared, whatever then extract it
+func saveToDisk(f *providers.File, path string, overwrite bool) ([]byte, error) {
+	epath := os.ExpandEnv((path))
 
 	var extraFlags int = os.O_EXCL
 
 	if overwrite {
 		extraFlags = 0
-		err := os.Remove(path)
-		log.Debugf("Overwrite flag set, removing file %s\n", path)
+		err := os.Remove(epath)
+		log.Debugf("Overwrite flag set, removing file %s\n", epath)
 		if err != nil && !os.IsNotExist(err) {
-			return err
+			return nil, err
 		}
 	}
 
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|extraFlags, 0766)
-
+	file, err := os.OpenFile(epath, os.O_RDWR|os.O_CREATE|extraFlags, 0o766)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	defer file.Close()
 
-	log.Infof("Copying for %s@%s into %s", f.Name, f.Version, path)
-	_, err = io.Copy(file, f.Data)
+	h := sha256.New()
+
+	tr := io.TeeReader(f.Data, h)
+
+	log.Infof("Copying for %s@%s into %s", f.Name, f.Version, epath)
+	_, err = io.Copy(file, tr)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return h.Sum(nil), nil
 }

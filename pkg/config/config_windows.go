@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -9,36 +10,55 @@ import (
 	"github.com/marcosnils/bin/pkg/options"
 )
 
-//getDefaultPath reads the user's PATH variable
-//and returns the first directory that's writable by the current
-//user in the system
-//TODO add feature to prompt the user which to select
-//if many paths are found
+// getDefaultPath reads the user's PATH variable
+// and returns the first directory that's writable by the current
+// user in the system
+// TODO add feature to prompt the user which to select
+// if many paths are found
 func getDefaultPath() (string, error) {
 	penv := os.Getenv("PATH")
 	log.Debugf("User PATH is [%s]", penv)
-	opts := []fmt.Stringer{}
+	opts := map[fmt.Stringer]struct{}{}
 	for _, p := range strings.Split(penv, ";") {
-		log.Debugf("Checking path %s", p)
 
-		info, err := os.Stat(p)
-		if err != nil || !info.IsDir() {
+		if err := checkDirExistsAndWritable(p); err != nil {
 			log.Debugf("Error [%s] checking path", err)
 			continue
 		}
 
-		// Check if the user bit is enabled in file permission
-		if info.Mode().Perm()&(1<<(uint(7))) != 0 {
-			log.Debugf("%s seems to be a dir and writable, adding option.", p)
-			opts = append(opts, options.LiteralStringer(p))
-		}
+		log.Debugf("%s seems to be a dir and writable, adding option.", p)
+		opts[options.LiteralStringer(p)] = struct{}{}
 
 	}
 
-	choice, err := options.Select("Pick a default download dir: ", opts)
+	if len(opts) == 0 {
+		return "", errors.New("Automatic path detection didn't return any results")
+	}
+
+	sopts := []fmt.Stringer{}
+	for k := range opts {
+		sopts = append(sopts, k)
+	}
+
+	choice, err := options.SelectCustom("Pick a default download dir: ", sopts)
 	if err != nil {
 		return "", err
 	}
 	return choice.(fmt.Stringer).String(), nil
+
+}
+
+func checkDirExistsAndWritable(dir string) error {
+	log.Debugf("Checking path %s", dir)
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return err
+	}
+
+	// Check if the user bit is enabled in file permission
+	if info.Mode().Perm()&(1<<(uint(7))) == 0 {
+		return errors.New(fmt.Sprintf("Dir %s is not writable", dir))
+	}
+	return nil
 
 }

@@ -1,7 +1,6 @@
 package providers
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -71,12 +70,16 @@ func (g *hashiCorp) GetID() string {
 	return "hashicorp"
 }
 
-func (g *hashiCorp) Fetch() (*File, error) {
+func (g *hashiCorp) Fetch(opts *FetchOpts) (*File, error) {
 	var release *hashiCorpRelease
 
 	// If we have a tag, let's fetch from there
 	var err error
-	if len(g.tag) > 0 {
+	if len(g.tag) > 0 || len(opts.Version) > 0 {
+		if len(opts.Version) > 0 {
+			// this is used by for the `ensure` command
+			g.tag = opts.Version
+		}
 		log.Infof("Getting %s release for %s", g.tag, g.repo)
 		release, err = g.getRelease(g.repo, g.tag)
 	} else {
@@ -97,12 +100,13 @@ func (g *hashiCorp) Fetch() (*File, error) {
 		candidates = append(candidates, &assets.Asset{Name: link.Filename, URL: link.URL})
 	}
 
-	gf, err := assets.FilterAssets(g.repo, candidates)
+	f := assets.NewFilter(&assets.FilterOpts{SkipScoring: opts.All, PackagePath: opts.PackagePath, SkipPathCheck: opts.SkipPatchCheck})
+	gf, err := f.FilterAssets(g.repo, candidates)
 	if err != nil {
 		return nil, err
 	}
 
-	name, outputFile, err := assets.ProcessURL(gf)
+	outFile, err := f.ProcessURL(gf)
 	if err != nil {
 		return nil, err
 	}
@@ -112,9 +116,9 @@ func (g *hashiCorp) Fetch() (*File, error) {
 	// TODO calculate file hash. Not sure if we can / should do it here
 	// since we don't want to read the file unnecesarily. Additionally, sometimes
 	// releases have .sha256 files, so it'd be nice to check for those also
-	f := &File{Data: outputFile, Name: assets.SanitizeName(name, version), Hash: sha256.New(), Version: version}
+	file := &File{Data: outFile.Source, Name: outFile.Name, Version: version}
 
-	return f, nil
+	return file, nil
 }
 
 // GetLatestVersion checks the latest repo release and

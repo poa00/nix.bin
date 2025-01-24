@@ -1,15 +1,14 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/apex/log"
 	"github.com/fatih/color"
 	"github.com/hashicorp/go-version"
 	"github.com/marcosnils/bin/pkg/config"
+	"github.com/marcosnils/bin/pkg/prompt"
 	"github.com/marcosnils/bin/pkg/providers"
 	"github.com/spf13/cobra"
 )
@@ -20,7 +19,11 @@ type updateCmd struct {
 }
 
 type updateOpts struct {
-	dryRun bool
+	yesToUpdate     bool
+	dryRun          bool
+	all             bool
+	skipPathCheck   bool
+	continueOnError bool
 }
 
 type updateInfo struct{ version, url string }
@@ -33,17 +36,11 @@ func newUpdateCmd() *updateCmd {
 		Aliases:       []string{"u"},
 		Short:         "Updates one or multiple binaries managed by bin",
 		SilenceUsage:  true,
-		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// TODO add support to update from a specific URL.
 			// This allows to update binares from a repo that contains
 			// multiple tags for different binaries
-
-			var bin string
-			if len(args) > 0 {
-				bin = args[0]
-			}
 
 			// TODO update should check all binaries with a
 			// certain configured parallelism (default 10, can be changed with -p) and report
@@ -53,57 +50,65 @@ func newUpdateCmd() *updateCmd {
 
 			toUpdate := map[*updateInfo]*config.Binary{}
 			cfg := config.Get()
-			binsToProcess := cfg.Bins
+			binsToProcess := map[string]*config.Binary{}
 
-			// Update single binary
-			if bin != "" {
-				bin, err := getBinPath(bin)
-				if err != nil {
-					return err
+			// Update specific binaries
+			if len(args) > 0 {
+				for _, a := range args {
+					bin, err := getBinPath(a)
+					if err != nil {
+						return err
+					}
+					if cfg.Bins[bin].Pinned {
+						log.Infof("%s is a pinned binary", a)
+						continue
+					}
+					binsToProcess[bin] = cfg.Bins[bin]
 				}
-				binsToProcess = map[string]*config.Binary{bin: cfg.Bins[bin]}
+			} else {
+				binsToProcess = cfg.Bins
 			}
+
+			updateFailures := map[*config.Binary]error{}
+
 			for _, b := range binsToProcess {
 				p, err := providers.New(b.URL, b.Provider)
 				if err != nil {
 					return err
 				}
 				if ui, err := getLatestVersion(b, p); err != nil {
+					if root.opts.continueOnError {
+						updateFailures[b] = fmt.Errorf("Error while getting latest version of %v: %v", b.Path, err)
+						continue
+					}
 					return err
 				} else if ui != nil {
 					toUpdate[ui] = b
 				}
 			}
 
-			if len(toUpdate) == 0 {
+			if len(toUpdate) == 0 && len(updateFailures) == 0 {
 				log.Infof("All binaries are up to date")
 				return nil
-			} else if root.opts.dryRun {
-				return fmt.Errorf("Command aborted, dry-run mode")
 			}
 
 			if root.opts.dryRun {
 				return wrapErrorWithCode(fmt.Errorf("Updates found, exit (dry-run mode)."), 3, "")
 			}
 
-			// TODO will have to refactor this prompt to a separate function
-			// so it can be reused in some other places
-			fmt.Printf("\nDo you want to continue? [Y/n] ")
-			reader := bufio.NewReader(os.Stdin)
-			var response string
+			if len(toUpdate) > 0 && !root.opts.yesToUpdate {
+				for _, err := range updateFailures {
+					log.Warnf("%v", err)
+				}
+				updateFailures = map[*config.Binary]error{}
 
-			response, err := reader.ReadString('\n')
-			if err != nil {
-				return fmt.Errorf("Invalid input")
+				err := prompt.Confirm("Do you want to continue?")
+				if err != nil {
+					return err
+				}
 			}
 
-			switch strings.ToLower(strings.TrimSpace(response)) {
-			case "y", "yes":
-			default:
-				return fmt.Errorf("Command aborted")
-			}
-
-			// TODO 	:S code smell here, this pretty much does
+			// TODO	:S code smell here, this pretty much does
 			// the same thing as install logic. Refactor to
 			// use the same code in both places
 			for ui, b := range toUpdate {
@@ -113,34 +118,48 @@ func newUpdateCmd() *updateCmd {
 					return err
 				}
 
-				pResult, err := p.Fetch()
+				pResult, err := p.Fetch(&providers.FetchOpts{All: root.opts.all, PackagePath: b.PackagePath, SkipPatchCheck: root.opts.skipPathCheck, PackageName: b.RemoteName})
 				if err != nil {
+					if root.opts.continueOnError {
+						updateFailures[b] = fmt.Errorf("Error while fetching %v: %w", ui.url, err)
+						continue
+					}
 					return err
 				}
 
-				if err = saveToDisk(pResult, b.Path, true); err != nil {
-					return fmt.Errorf("Error installing binary %w", err)
+				hash, err := saveToDisk(pResult, b.Path, true)
+				if err != nil {
+					return fmt.Errorf("error installing binary: %w", err)
 				}
 
 				err = config.UpsertBinary(&config.Binary{
-					RemoteName: pResult.Name,
-					Path:       b.Path,
-					Version:    pResult.Version,
-					Hash:       fmt.Sprintf("%x", pResult.Hash.Sum(nil)),
-					URL:        ui.url,
+					RemoteName:  pResult.Name,
+					Path:        b.Path,
+					Version:     pResult.Version,
+					Hash:        fmt.Sprintf("%x", hash),
+					URL:         ui.url,
+					PackagePath: pResult.PackagePath,
 				})
 				if err != nil {
 					return err
 				}
 
-				log.Infof("Done updating %s to %s", b.Path, color.GreenString(ui.version))
+				log.Infof("Done updating %s to %s", os.ExpandEnv(b.Path), color.GreenString(ui.version))
 			}
+			for _, err := range updateFailures {
+				log.Warnf("%v", err)
+			}
+			// TODO: Return wrapping error with specific exit code if len(updateFailures) > 0?
 			return nil
 		},
 	}
 
 	root.cmd = cmd
 	root.cmd.Flags().BoolVarP(&root.opts.dryRun, "dry-run", "", false, "Only show status, don't prompt for update")
+	root.cmd.Flags().BoolVarP(&root.opts.yesToUpdate, "yes", "y", false, "Assume yes to update prompt")
+	root.cmd.Flags().BoolVarP(&root.opts.all, "all", "a", false, "Show all possible download options (skip scoring & filtering)")
+	root.cmd.Flags().BoolVarP(&root.opts.skipPathCheck, "skip-path-check", "p", false, "Skips path checking when looking into packages")
+	root.cmd.Flags().BoolVarP(&root.opts.continueOnError, "continue-on-error", "c", false, "Continues to update next package if an error is encountered")
 	return root
 }
 

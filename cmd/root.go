@@ -3,7 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strings"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/apex/log"
 	"github.com/apex/log/handlers/cli"
@@ -65,7 +66,7 @@ func newRootCmd(version string, exit func(int)) *rootCmd {
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			if root.debug {
 				log.SetLevel(log.DebugLevel)
-				log.Debug("debug logs enabled")
+				log.Debugf("debug logs enabled, version: %s\n", version)
 			}
 
 			// check and load config after handlers are configured
@@ -81,6 +82,8 @@ func newRootCmd(version string, exit func(int)) *rootCmd {
 		newInstallCmd().cmd,
 		newEnsureCmd().cmd,
 		newUpdateCmd().cmd,
+		newPinCmd().cmd,
+		newUnpinCmd().cmd,
 		newRemoveCmd().cmd,
 		newListCmd().cmd,
 		newPruneCmd().cmd,
@@ -98,14 +101,23 @@ func defaultCommand(cmd *cobra.Command, args []string) bool {
 		return false
 	}
 
-	// if we have != 1 args, assume its a ls
-	if len(args) != 1 {
+	// special case for cobra's default completion command
+	// ref: https://github.com/kubernetes/kubectl/blob/04af20f5a9d2b56d910a36fec84f21164df65d32/pkg/cmd/cmd.go#L132
+	if len(args) > 0 &&
+		(args[0] == "completion" ||
+			args[0] == cobra.ShellCompRequestCmd ||
+			args[0] == cobra.ShellCompNoDescRequestCmd) {
+		return false
+	}
+
+	// if we have == 0 args, assume its a ls
+	if len(args) == 0 {
 		return true
 	}
 
 	// given that its 1, check if its one of the valid standalone flags
 	// for the root cmd
-	for _, s := range []string{"-h", "--help", "-v", "--version"} {
+	for _, s := range []string{"-h", "--help", "-v", "--version", "help"} {
 		if s == args[0] {
 			// if it is, we should run the root cmd
 			return false
@@ -117,17 +129,22 @@ func defaultCommand(cmd *cobra.Command, args []string) bool {
 }
 
 func getBinPath(name string) (string, error) {
-	if strings.Contains(name, "/") {
-		return name, nil
+	var f string
+	f, err := exec.LookPath(name)
+	if err != nil {
+		f, err = filepath.Abs(os.ExpandEnv(name))
+		if err != nil {
+			return "", err
+		}
 	}
 
 	cfg := config.Get()
 
 	for _, bin := range cfg.Bins {
-		if bin.RemoteName == name {
+		if os.ExpandEnv(bin.Path) == f {
 			return bin.Path, nil
 		}
 	}
 
-	return "", fmt.Errorf("Binary path %s not found", name)
+	return "", fmt.Errorf("binary path %s not found", f)
 }

@@ -1,16 +1,21 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/apex/log"
 	"github.com/marcosnils/bin/pkg/config"
+	"github.com/marcosnils/bin/pkg/prompt"
 	"github.com/spf13/cobra"
 )
 
 type pruneCmd struct {
-	cmd *cobra.Command
+	cmd  *cobra.Command
+	opts pruneOpts
+}
+
+type pruneOpts struct {
+	force bool
 }
 
 func newPruneCmd() *pruneCmd {
@@ -26,25 +31,22 @@ func newPruneCmd() *pruneCmd {
 
 			pathsToDel := []string{}
 			for _, b := range cfg.Bins {
-				if _, err := os.Stat(b.Path); os.IsNotExist(err) {
-					log.Infof("%s not found removing", b.Path)
+				ep := os.ExpandEnv(b.Path)
+				if _, err := os.Stat(ep); os.IsNotExist(err) {
+					log.Infof("%s not found removing", ep)
 					pathsToDel = append(pathsToDel, b.Path)
 				}
 			}
 
-			// TODO will have to refactor this prompt to a separate function
-			// so it can be reused in some other places
-			// TODO add force flag to bypass prompt
-			fmt.Printf("\nThe following paths will be removed. Continue? [Y/n] ")
-			var response string
-
-			_, err := fmt.Scanln(&response)
-			if err != nil {
-				return fmt.Errorf("Invalid input")
+			if len(pathsToDel) == 0 {
+				return nil
 			}
 
-			if response != "Y" {
-				return fmt.Errorf("Command aborted")
+			if !root.opts.force {
+				err := prompt.Confirm("The following paths will be removed. Continue?")
+				if err != nil {
+					return err
+				}
 			}
 
 			return config.RemoveBinaries(pathsToDel)
@@ -52,5 +54,6 @@ func newPruneCmd() *pruneCmd {
 	}
 
 	root.cmd = cmd
+	root.cmd.Flags().BoolVarP(&root.opts.force, "force", "f", false, "Bypass confirmation prompt")
 	return root
 }

@@ -1,6 +1,6 @@
 # bin
 
-Manages bin files downloaded from different sources
+Manages binary files downloaded from different sources
 
 ![bin](https://user-images.githubusercontent.com/1578458/87901619-ee629a80-ca2d-11ea-8609-8a8eb39801d2.gif)
 
@@ -21,7 +21,7 @@ to be doing way more than what I'm actually needing. So, I've decided to continu
 that could result useful to someone else.
 
 If you find `bin` helpful and you have any ideas or suggestions, please create an issue here or send a PR and I'll
-be more than happy to brainstrom about possibilities.
+be more than happy to brainstorm about possibilities.
 
 ## Installing
 
@@ -58,15 +58,21 @@ bin list # List current binaries and it's versions
 bin prune # Removes from the DB missing binaries
 bin remove <bin>... # Deletes one or more binaries
 bin update [bin]... # Scans binaries and prompts for update
+bin pin <bin>... # Pins current version of one or more binaries
+bin unpin <bin>... # Unpins one or more binaries
 ```
 
 ## FAQ
 
+### Can you give some example tools
+
+Yes. Following [list](https://github.com/marcosnils/bin/wiki/Tools-list)
+
 ### There are some bugs and the code is not tested
 
-I know.. and that's not planning to change any time soon unless I start getting some contributions. I did this as a personal tool and I'll probably be fixing stuff and adding features as I personally need them. Contributions are welcome though and I'll be happy to discuss and review them.
+I know... and that's not planning to change any time soon unless I start getting some contributions. I did this as a personal tool and I'll probably be fixing stuff and adding features as I personally need them. Contributions are welcome though and I'll be happy to discuss and review them.
 
-### I see releases on Github, but bin does not pick them up
+### I see releases on Github, but `bin` does not pick them up
 
 At the moment, `bin` does only consider the [latest release from Github](https://docs.github.com/en/rest/reference/repos#get-the-latest-release) according to the following definition:
 
@@ -74,7 +80,7 @@ At the moment, `bin` does only consider the [latest release from Github](https:/
 
 You _can_ however install a specific pre-release by specifying the URL for the pre-release, e.g. `bin install https://github.com/bufbuild/buf/releases/tag/v0.40.0`.
 
-### I used bin and I got rate limited by Github, what can I do
+### I used `bin` and I got rate limited by Github or want to access private repos, what can I do?
 
 Create a Github personal access token by following the steps in this guide: [Creating a personal access token](https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token). The access token used with `bin` does not need any scopes.
 
